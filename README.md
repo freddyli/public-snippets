@@ -1,1 +1,3 @@
-# public-snippets
+# snippets
+
+Small code snippets that I found or wrote
