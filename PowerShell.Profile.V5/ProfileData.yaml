@@ -1,0 +1,36 @@
+Generic:
+    KeePassAccessKey: ...
+    KeePassAccessID: ...
+    
+    PuTTYExeFilePath: C:\Data\InstallNew\PuTTY\putty\PUTTY.EXE
+    VSphereClientExeFilePath: C:\Program Files (x86)\VMware\Infrastructure\Virtual Infrastructure Client\Launcher\VpxClient.exe
+    
+    # DefaultVCenterServerHostname: ...
+
+    # HostnameCompletionCSVFiles: $PSScriptRoot\infrastructure\networking\*VLAN*.csv
+
+Credentials:
+    # default-ssh: 
+    # default-rdp: 
+    # default-winrm: 
+    # default-vsc: 
+    
+
+    # This specifies username and password directly
+    credone: &anchor-credone
+        Username: someuser
+        PasswordSecretString: ...
+    
+    # This executes PowerShell commands
+    credtwo: &anchor-credtwo cr-kp; cr-kp-root
+
+CredentialsByHostname:
+    # This uses a yaml anchor
+    10.20.30.40|somehost(.some.domain.com)?: *anchor-credone
+
+    # This executes PowerShell commands
+    10.15.40.25: cr-credtwo
+
+HostDefinitions:
+    - { IP-address: 10.20.30.40, FQDN: somehost.some.domain.com, Description: Additional Definition, State: active }
+    # ...
