@@ -1,12 +1,17 @@
+Includes: !!seq
+    # - $PSScriptRoot\infrastructure\powershell-profile\shared.yaml
+
 Generic:
-    KeePassAccessKey: ...
-    KeePassAccessID: ...
-    
-    PuTTYExeFilePath: C:\Data\InstallNew\PuTTY\putty\PUTTY.EXE
+    # KeePassAccessKey: ...
+    # KeePassAccessID: ...
+    # KeePassFilePath: \\fe-xdedistrib\public\tool_library\nes2_tools\Info\PW_TeamSWEngInfra.kdbx
+    # KeePassExeFilePath: C:\Program Files (x86)\KeePass Password Safe 2\KeePass.exe
+
+    PuTTYExeFilePath: C:\Work\Programs\PuTTY\PUTTY.EXE
     VSphereClientExeFilePath: C:\Program Files (x86)\VMware\Infrastructure\Virtual Infrastructure Client\Launcher\VpxClient.exe
     
     # DefaultVCenterServerHostname: ...
-
+    
     # HostnameCompletionCSVFiles: $PSScriptRoot\infrastructure\networking\*VLAN*.csv
 
 Credentials:

@@ -1270,7 +1270,7 @@ Set-StrictMode -Version Latest
 $StopWatch = [System.Diagnostics.Stopwatch]::StartNew()
 [Console]::BufferHeight = 9999
 
-#region -- Fast YAML
+#region -- Fast YAML and Merge-Object
 Add-Type -Path "$PSScriptRoot\YamlDotNet.dll"
 
 Function ConvertFrom-YAMLQuickly
@@ -1341,6 +1341,7 @@ Function ConvertFrom-YAMLQuickly
                         'tag:yaml.org,2002:null'      { $Null; break }
                         'tag:yaml.org,2002:timestamp' { [DateTime] $CurrentItem.Value; break }
                         'tag:yaml.org,2002:binary'    { [System.Convert]::FromBase64String($CurrentItem.Value); break }
+                        'tag:yaml.org,2002:seq'       { if ($CurrentItem.Value) { , ([Collections.ArrayList] @($CurrentItem.Value)) } else { , ([Collections.ArrayList] @()) }; break }
                         default                       { $CurrentItem.Value } # Value is a string
                     }
                 }
@@ -1356,7 +1357,89 @@ Function ConvertFrom-YAMLQuickly
             $CurrentItemInfo['Container'][$Location] = $CurrentValue
         }
         
-        $ResultList[0]
+        $ResultList # PowerShell will return the content into pipeline, not the ArrayList object
+    }
+}
+
+Function Merge-Object
+{
+    <#
+        .SYNOPSIS
+            Merges two objects. Only supports structures consisting of modifyable ILists and IDictionaries.
+            
+            Merges Object2 into Object1; therefore modifying Object1.
+    #>
+    
+    Param(
+        $Object1,
+        $Object2,
+        [Switch] $PassThru
+    )
+    
+    if ($Null -eq $Object1)
+    {
+        $Result = $Object2
+    }
+    else
+    {
+        $Result = $Object1
+        
+        if ($Null -ne $Object2)
+        {
+            $Queue = New-Object System.Collections.Queue
+            $Queue.Enqueue(@{ Object1 = $Object1; Object2 = $Object2 })
+            
+            while ($Queue.Count -gt 0)
+            {
+                $CurrentItemInfo = $Queue.Dequeue()
+                $Object1 = $CurrentItemInfo['Object1']
+                $Object2 = $CurrentItemInfo['Object2']
+                
+                if ($Object1 -is [Collections.IList])
+                {
+                    if ($Object1.IsFixedSize)
+                    {
+                        Throw 'Cannot modify fixed size lists'
+                    }
+                    
+                    foreach ($Object in $Object2)
+                    {
+                        $Object1.Add($Object) > $Null
+                    }
+                }
+                elseif ($Object1 -is [Collections.IDictionary])
+                {
+                    if ($Object2 -is [Collections.IDictionary])
+                    {
+                        foreach ($Key in $Object2.Keys)
+                        {
+                            if (($Object1[$Key] -is [Collections.IList]) -or
+                                $Object1[$Key] -is [Collections.IDictionary])
+                            {
+                                $Queue.Enqueue(@{ Object1 = $Object1[$Key]; Object2 = $Object2[$Key] })
+                            }
+                            else
+                            {
+                                $Object1[$Key] = $Object2[$Key]
+                            }
+                        }
+                    }
+                    else
+                    {
+                        Throw "Unsupported object type (right side): $($Object2.GetType().FullName)"
+                    }
+                }
+                else
+                {
+                    Throw "Unsupported object type (left side): $($Object1.GetType().FullName)"
+                }
+            }
+        }
+    }
+    
+    if ($PassThru)
+    {
+        $Result
     }
 }
 #endregion
@@ -1369,20 +1452,64 @@ try
 }
 catch
 {
-    Write-Warning "Could not load $ProfileDataFilePath"
+    Write-Warning "Could not load ProfileData from file [$ProfileDataFilePath]:`r`n$($_.Exception.Message)"
+}
+
+$IncludeFilePathsQueue = New-Object Collections.Queue
+try { foreach ($IncludeFilePath in $ProfileData['Includes']) { $IncludeFilePathsQueue.Enqueue($IncludeFilePath) } } catch {}
+$LoadedProfileDataFilePathsHelper = @{}
+while ($IncludeFilePathsQueue.Count -gt 0)
+{
+    $IncludeFilePath = $IncludeFilePathsQueue.Dequeue()
+    
+    try
+    {
+        $IncludeFilePath = $ExecutionContext.InvokeCommand.ExpandString($IncludeFilePath)
+        $IncludeFilePathFull = (Get-Item $IncludeFilePath).FullName
+        
+        if ($LoadedProfileDataFilePathsHelper.ContainsKey($IncludeFilePathFull))
+        {
+            Write-Warning "Cycle detected in ProfileData includes. Not including again: $IncludeFilePathFull"
+            continue
+        }
+        
+        $AdditionalProfileData = Get-Content $IncludeFilePath -Raw | ConvertFrom-YAMLQuickly
+        try { foreach ($IncludeFilePath in $AdditionalProfileData['Includes']) { $IncludeFilePathsQueue.Enqueue($IncludeFilePath) } } catch {}
+        $AdditionalProfileData.Remove('Includes')
+        
+        Merge-Object $ProfileData $AdditionalProfileData
+        
+        $LoadedProfileDataFilePathsHelper[$IncludeFilePathFull] = $True
+    }
+    catch
+    {
+        Write-Warning "Could not load included ProfileData from file [$IncludeFilePath]:`r`n$($_.Exception.Message)"
+    }
 }
 
 #region -- Credential functions
 Function Setup-KeePassPSCredential
 {
+    [CmdletBinding(DefaultParameterSetName='EncryptWithUserKey')]
+    Param(
+        [Parameter(ParameterSetName='EncryptWithUserKey')] [ValidateSet($True)] [Switch] $EncryptWithUserKey,
+        
+        [Parameter(ParameterSetName='EncryptWithMachineKey')] [ValidateSet($True)] [Switch] $EncryptWithMachineKey,
+        
+        [Parameter(ParameterSetName='EncryptWithCertificate')] [ValidateSet($True)] [Switch] $EncryptWithCertificate,
+        [Parameter(ParameterSetName='EncryptWithCertificate', Mandatory=$True)] [String] $CertificatePath,
+        
+        [Parameter(ParameterSetName='PlainText')] [ValidateSet($True)] [Switch] $PlainText
+    )
+    
     $Key = Generate-CryptoRandomBytes -LengthBits 256 -AsBase64
-    $EncryptedKey = $Key | ConvertTo-SecretString -DecodeBase64
+    $KeySecretString = $Key | ConvertTo-SecretString -DecodeBase64 @PSBoundParameters
     $Result = Associate-KeePassHTTP -Key $Key | ForEach-Object { [PSCustomObject] @{
-        EncryptedKey = $EncryptedKey
+        KeySecretString = $KeySecretString
         ID = $_.Id
     }}
     
-    Write-Host -F Green ("KeePassAccessKey: $($Result.EncryptedKey)")
+    Write-Host -F Green ("KeePassAccessKeySecretString: $($Result.KeySecretString)")
     Write-Host -F Green ("KeePassAccessID: $($Result.ID)")
 }
 
@@ -1392,9 +1519,11 @@ Function Get-KeePassPSCredential
         [String] $Name
     )
     
+    MakeSure-KeePassFileIsOpened
+    
     try
     {
-        $Key = $ProfileData['Generic']['KeePassAccessKey'] | ConvertFrom-SecretString -OutBase64
+        $Key = $ProfileData['Generic']['KeePassAccessKey'] | ConvertFrom-SecretString
         $ID = $ProfileData['Generic']['KeePassAccessID']
     }
     catch
@@ -1456,7 +1585,22 @@ $CS | Convert-CredentialFromString
     }
 }
 
-Set-Alias -Name cr-kp -Value Load-KeePassPSCredentials -Scope Global
+Set-Alias -Name cr-kp -Value Get-KeePassPSCredential -Scope Global
+
+Function MakeSure-KeePassFileIsOpened
+{
+    $KeePassExeFilePath = try { $ProfileData['Generic']['KeePassExeFilePath'] } catch {}
+    $KeePassFilePath = try { $ProfileData['Generic']['KeePassFilePath'] } catch {}
+    
+    if ($KeePassFilePath)
+    {
+        $KeePassProcess = Get-Process -Name KeePass -EA SilentlyContinue
+        if ($Null -eq $KeePassProcess)
+        {
+            & $KeePassExeFilePath $KeePassFilePath
+        }
+    }
+}
 
 Function Generate-ScriptBlockFromCredentialInfo
 {
@@ -2020,6 +2164,12 @@ Register-ArgumentCompleter -ParameterName ComputerName -ScriptBlock $HostnameCom
 Register-ArgumentCompleter -ParameterName Hostname -ScriptBlock $HostnameCompletionScriptBlock
 Register-ArgumentCompleter -ParameterName Hostnames -ScriptBlock $HostnameCompletionScriptBlock
 Register-ArgumentCompleter -CommandName ping -ScriptBlock $NativeHostnameCompletionScriptBlock
+
+Register-ArgumentCompleter -CommandName Get-KeePassPSCredential -ParameterName Name -ScriptBlock {
+    Param($CommandName, $ParameterName, $WordToComplete, $CommandAst, $FakeBoundParameter)
+    Get-KeePassPSCredential | ? KeePassName -like *$WordToComplete* | Select -ExpandProperty KeePassName
+}
+
 #endregion
 
 Load-CredentialsFromProfileData
