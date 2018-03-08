@@ -1523,12 +1523,12 @@ Function Get-KeePassPSCredential
     
     try
     {
-        $Key = $ProfileData['Generic']['KeePassAccessKey'] | ConvertFrom-SecretString
+        $Key = $ProfileData['Generic']['KeePassAccessKeySecretString'] | ConvertFrom-SecretString
         $ID = $ProfileData['Generic']['KeePassAccessID']
     }
     catch
     {
-        Throw 'Could not get KeePassAccessKey and/or KeePassAccessID from ProfileData'
+        Throw 'Could not get KeePassAccessKeySecretString and/or KeePassAccessID from ProfileData'
     }
     
     $KeePassEntries = Get-KeePassHTTPEntry -Key $Key -ID $ID -Filter '#PowerShellCredential'
