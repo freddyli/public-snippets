@@ -1100,7 +1100,7 @@ Function ConvertTo-SecretString
             }
             'PlainText'
             {
-                $InfoObjectProperties['Content'] = [Text.Encoding]::UTF8.GetString($InputObjectBytes)
+                $InfoObjectProperties['Content'] = [Convert]::ToBase64String($InputObjectBytes)
                 $InfoObjectProperties['CryptoProvider'] = 'ClearText'
             }
             default
@@ -1241,9 +1241,9 @@ Function ConvertFrom-SecretString
             {
                 switch ($PSCmdlet.ParameterSetName)
                 {
-                    OutString { $Output = $InfoObject.Content; break }
-                    OutBase64 { $Output = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($InfoObject.Content)); break }
-                    OutBytes { $Output = [Text.Encoding]::UTF8.GetBytes($InfoObject.Content); break }
+                    OutString { $Output = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($InfoObject.Content)); break }
+                    OutBase64 { $Output = $InfoObject.Content; break }
+                    OutBytes { $Output = [Convert]::FromBase64String($InfoObject.Content); break }
                     default { Throw 'Unexpected ParameterSetName: $($PSCmdlet.ParameterSetName)' }
                 }
             }
@@ -1523,7 +1523,7 @@ Function Get-KeePassPSCredential
     
     try
     {
-        $Key = $ProfileData['Generic']['KeePassAccessKeySecretString'] | ConvertFrom-SecretString
+        $Key = $ProfileData['Generic']['KeePassAccessKeySecretString'] | ConvertFrom-SecretString -OutBase64
         $ID = $ProfileData['Generic']['KeePassAccessID']
     }
     catch
