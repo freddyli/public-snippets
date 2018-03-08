@@ -1335,7 +1335,7 @@ Function ConvertFrom-YAMLQuickly
                     $CurrentValue = switch ($CurrentItem.Tag)
                     {
                         
-                        'tag:yaml.org,2002:bool'      { [Bool] $CurrentItem.Value; break }
+                        'tag:yaml.org,2002:bool'      { [Bool]::Parse($CurrentItem.Value); break }
                         'tag:yaml.org,2002:float'     { [Double] $CurrentItem.Value; break }
                         'tag:yaml.org,2002:int'       { [Int] $CurrentItem.Value; break }
                         'tag:yaml.org,2002:null'      { $Null; break }
@@ -1373,6 +1373,7 @@ Function Merge-Object
     Param(
         $Object1,
         $Object2,
+        [ValidateSet('Object1Wins', 'Object2Wins')] [String] $OverrideStrategy = 'Object2Wins',
         [Switch] $PassThru
     )
     
@@ -1420,7 +1421,19 @@ Function Merge-Object
                             }
                             else
                             {
-                                $Object1[$Key] = $Object2[$Key]
+                                if ($Object1.Contains($Key))
+                                {
+                                    switch ($OverrideStrategy)
+                                    {
+                                        Object1Wins { break } # Nothing to do here
+                                        Object2Wins { $Object1[$Key] = $Object2[$Key]; break }
+                                        default { Throw "Unexpected OverrideStrategy: $OverrideStrategy" }
+                                    }
+                                }
+                                else
+                                {
+                                    $Object1[$Key] = $Object2[$Key]
+                                }
                             }
                         }
                     }
@@ -1455,12 +1468,22 @@ catch
     Write-Warning "Could not load ProfileData from file [$ProfileDataFilePath]:`r`n$($_.Exception.Message)"
 }
 
-$IncludeFilePathsQueue = New-Object Collections.Queue
-try { foreach ($IncludeFilePath in $ProfileData['Includes']) { $IncludeFilePathsQueue.Enqueue($IncludeFilePath) } } catch {}
-$LoadedProfileDataFilePathsHelper = @{}
-while ($IncludeFilePathsQueue.Count -gt 0)
+$IncludeInfoSetsQueue = New-Object Collections.Queue
+try
 {
-    $IncludeFilePath = $IncludeFilePathsQueue.Dequeue()
+    foreach ($IncludeInfoSet in $ProfileData['Includes'])
+    {
+        $IncludeInfoSetsQueue.Enqueue($IncludeInfoSet)
+    }
+}
+catch {}
+
+$LoadedProfileDataFilePathsHelper = @{}
+while ($IncludeInfoSetsQueue.Count -gt 0)
+{
+    $IncludeInfoSet = $IncludeInfoSetsQueue.Dequeue()
+    $IncludeInfoSet['Override'] = $IncludeInfoSet['Override'] -and [Bool]::Parse($IncludeInfoSet['Override']) # Convert to boolean
+    $IncludeFilePath = $IncludeInfoSet.FilePath
     
     try
     {
@@ -1474,10 +1497,21 @@ while ($IncludeFilePathsQueue.Count -gt 0)
         }
         
         $AdditionalProfileData = Get-Content $IncludeFilePath -Raw | ConvertFrom-YAMLQuickly
-        try { foreach ($IncludeFilePath in $AdditionalProfileData['Includes']) { $IncludeFilePathsQueue.Enqueue($IncludeFilePath) } } catch {}
+        
+        try
+        {
+            foreach ($AdditionalIncludeInfoSet in $AdditionalProfileData['Includes'])
+            {
+                $AdditionalIncludeInfoSet['Override'] = $AdditionalIncludeInfoSet['Override'] -and [Bool]::Parse($AdditionalIncludeInfoSet['Override']) # Convert to boolean
+                $AdditionalIncludeInfoSet['Override'] = $AdditionalIncludeInfoSet['Override'] -and $IncludeInfoSet['Override'] # Only if 'both agree' -> override
+                $IncludeInfoSetsQueue.Enqueue($AdditionalIncludeInfoSet)
+            }
+        }
+        catch {}
         $AdditionalProfileData.Remove('Includes')
         
-        Merge-Object $ProfileData $AdditionalProfileData
+        $OverrideStrategy = if ($IncludeInfoSet['Override']) { 'Object2Wins' } else { 'Object1Wins' }
+        Merge-Object -Object1 $ProfileData -Object2 $AdditionalProfileData -OverrideStrategy $OverrideStrategy
         
         $LoadedProfileDataFilePathsHelper[$IncludeFilePathFull] = $True
     }

@@ -1,5 +1,5 @@
 Includes: !!seq
-    # - $PSScriptRoot\infrastructure\powershell-profile\shared.yaml
+    - { FilePath: $PSScriptRoot\infrastructure\powershell-profile\shared.yaml, Override: False }
 
 Generic:
     # KeePassAccessKey: ...
