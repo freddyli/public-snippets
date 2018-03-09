@@ -1365,21 +1365,34 @@ Function Merge-Object
 {
     <#
         .SYNOPSIS
-            Merges two objects. Only supports structures consisting of modifyable ILists and IDictionaries.
+            Merges two objects. Originally it supported only structures consisting of modifyable ILists and IDictionaries.
             
-            Merges Object2 into Object1; therefore modifying Object1.
+            But now arrays are supported as long as: Object1 -isnot [Array]. They will be converted to ArrayLists.
+            
+            Also PSObjects can be treated like dictionaries using the -TreatPSObjectsLikeDictionaries parameter.
+            
+            Object2 will be merged into Object1; therefore Object1 will be modified.
     #>
     
     Param(
         $Object1,
         $Object2,
         [ValidateSet('Object1Wins', 'Object2Wins')] [String] $OverrideStrategy = 'Object2Wins',
+        [ValidateSet('Object1First', 'Object2First')] [String] $CollectionOrder = 'Object1First',
+        [Switch] $TreatPSObjectsLikeDictionaries,
         [Switch] $PassThru
     )
     
     if ($Null -eq $Object1)
     {
-        $Result = $Object2
+        if ($PassThru)
+        {
+            $Result = $Object2
+        }
+        else
+        {
+            Throw 'Object1 is Null and -PassThru is not specified'
+        }
     }
     else
     {
@@ -1396,6 +1409,16 @@ Function Merge-Object
                 $Object1 = $CurrentItemInfo['Object1']
                 $Object2 = $CurrentItemInfo['Object2']
                 
+                if ($TreatPSObjectsLikeDictionaries -and ($Object2 -is [System.Management.Automation.PSCustomObject]))
+                {
+                    $Hashtable = [Ordered] @{}
+                    foreach ($Property in $Object2.PSObject.Properties)
+                    {
+                        $Hashtable[$Property.Name] = $Property.Value
+                    }
+                    $Object2 = $Hashtable
+                }
+                
                 if ($Object1 -is [Collections.IList])
                 {
                     if ($Object1.IsFixedSize)
@@ -1403,9 +1426,40 @@ Function Merge-Object
                         Throw 'Cannot modify fixed size lists'
                     }
                     
-                    foreach ($Object in $Object2)
+                    switch ($CollectionOrder)
                     {
-                        $Object1.Add($Object) > $Null
+                        Object1First
+                        {
+                            if ($Object2 -is [Collections.ICollection])
+                            {
+                                $Object1.AddRange($Object2) > $Null
+                            }
+                            else
+                            {
+                                $Object1.Add($Object2) > $Null
+                            }
+                            break
+                        }
+                        
+                        Object2First
+                        {
+                            $Object1Items = $Object1.ToArray()
+                            $Object1.Clear()
+                            
+                            if ($Object2 -is [Collections.ICollection])
+                            {
+                                $Object1.AddRange($Object2) > $Null
+                            }
+                            else
+                            {
+                                $Object1.Add($Object2) > $Null
+                            }
+                            
+                            $Object1.AddRange($Object1Items)
+                            break
+                        }
+                        
+                        default { Throw "Unexpected CollectionOrder: $CollectionOrder" }
                     }
                 }
                 elseif ($Object1 -is [Collections.IDictionary])
@@ -1414,26 +1468,82 @@ Function Merge-Object
                     {
                         foreach ($Key in $Object2.Keys)
                         {
-                            if (($Object1[$Key] -is [Collections.IList]) -or
-                                $Object1[$Key] -is [Collections.IDictionary])
+                            if ($Object1.Contains($Key))
                             {
-                                $Queue.Enqueue(@{ Object1 = $Object1[$Key]; Object2 = $Object2[$Key] })
-                            }
-                            else
-                            {
-                                if ($Object1.Contains($Key))
+                                if ($Object1[$Key] -is [Collections.IDictionary])
+                                {
+                                    $Queue.Enqueue(@{ Object1 = $Object1[$Key]; Object2 = $Object2[$Key] }) # Enqueue container for further merging
+                                }
+                                elseif ($Object1[$Key] -is [Collections.IList])
+                                {
+                                    if ($Object1[$Key].IsFixedSize)
+                                    {
+                                        $Object1[$Key] = [Collections.ArrayList] $Object1[$Key] # Convert some fixed size IList to ArrayList
+                                    }
+                                    
+                                    $Queue.Enqueue(@{ Object1 = $Object1[$Key]; Object2 = $Object2[$Key] }) # Enqueue container for further merging
+                                }
+                                else
                                 {
                                     switch ($OverrideStrategy)
                                     {
-                                        Object1Wins { break } # Nothing to do here
+                                        Object1Wins { break } # Nothing to do here; we do not change the existing value in Object1
                                         Object2Wins { $Object1[$Key] = $Object2[$Key]; break }
                                         default { Throw "Unexpected OverrideStrategy: $OverrideStrategy" }
                                     }
                                 }
+                            }
+                            else
+                            {
+                                $Object1[$Key] = $Object2[$Key]
+                            }
+                        }
+                    }
+                    else
+                    {
+                        Throw "Unsupported object type (right side): $($Object2.GetType().FullName)"
+                    }
+                }
+                elseif ($TreatPSObjectsLikeDictionaries -and ($Object1 -is [System.Management.Automation.PSCustomObject]))
+                {
+                    $Object1PropertiesByName = [Ordered] @{}
+                    foreach ($Property in $Object1.PSObject.Properties)
+                    {
+                        $Object1PropertiesByName[$Property.Name] = $Property.Value
+                    }
+                    
+                    if ($Object2 -is [Collections.IDictionary])
+                    {
+                        foreach ($Key in $Object2.Keys)
+                        {
+                            if ($Object1PropertiesByName.Contains($Key))
+                            {
+                                if ($Object1.$Key -is [Collections.IDictionary])
+                                {
+                                    $Queue.Enqueue(@{ Object1 = $Object1.$Key; Object2 = $Object2[$Key] }) # Enqueue container for further merging
+                                }
+                                elseif ($Object1.$Key -is [Collections.IList])
+                                {
+                                    if ($Object1.$Key.IsFixedSize)
+                                    {
+                                        $Object1.$Key = [Collections.ArrayList] $Object1.$Key # Convert some fixed size IList to ArrayList
+                                    }
+                                    
+                                    $Queue.Enqueue(@{ Object1 = $Object1.$Key; Object2 = $Object2[$Key] }) # Enqueue container for further merging
+                                }
                                 else
                                 {
-                                    $Object1[$Key] = $Object2[$Key]
+                                    switch ($OverrideStrategy)
+                                    {
+                                        Object1Wins { break } # Nothing to do here; we do not change the existing value in Object1
+                                        Object2Wins { $Object1.$Key = $Object2[$Key]; break }
+                                        default { Throw "Unexpected OverrideStrategy: $OverrideStrategy" }
+                                    }
                                 }
+                            }
+                            else
+                            {
+                                Add-Member -InputObject $Object1 -MemberType NoteProperty -Name $Key -Value $Object2[$Key]
                             }
                         }
                     }
@@ -1511,7 +1621,8 @@ while ($IncludeInfoSetsQueue.Count -gt 0)
         $AdditionalProfileData.Remove('Includes')
         
         $OverrideStrategy = if ($IncludeInfoSet['Override']) { 'Object2Wins' } else { 'Object1Wins' }
-        Merge-Object -Object1 $ProfileData -Object2 $AdditionalProfileData -OverrideStrategy $OverrideStrategy
+        $CollectionOrder = if ($IncludeInfoSet['Override']) { 'Object2First' } else { 'Object1First' }
+        Merge-Object -Object1 $ProfileData -Object2 $AdditionalProfileData -OverrideStrategy $OverrideStrategy -CollectionOrder $CollectionOrder
         
         $LoadedProfileDataFilePathsHelper[$IncludeFilePathFull] = $True
     }
