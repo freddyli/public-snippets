@@ -1743,6 +1743,7 @@ Function MakeSure-KeePassFileIsOpened
         if ($Null -eq $KeePassProcess)
         {
             & $KeePassExeFilePath $KeePassFilePath
+            Start-Sleep -Seconds 1
         }
     }
 }

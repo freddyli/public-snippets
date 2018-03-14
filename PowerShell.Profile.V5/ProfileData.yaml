@@ -1,10 +1,10 @@
 Includes: !!seq
-    - { FilePath: $PSScriptRoot\infrastructure\powershell-profile\shared.yaml, Override: False }
+    # - { FilePath: $PSScriptRoot\infrastructure\powershell-profile\shared.yaml, Override: False }
 
 Generic:
-    # KeePassAccessKey: ...
+    # KeePassAccessKeySecretString: ...
     # KeePassAccessID: ...
-    # KeePassFilePath: \\fe-xdedistrib\public\tool_library\nes2_tools\Info\PW_TeamSWEngInfra.kdbx
+    # KeePassFilePath: ...
     # KeePassExeFilePath: C:\Program Files (x86)\KeePass Password Safe 2\KeePass.exe
 
     PuTTYExeFilePath: C:\Work\Programs\PuTTY\PUTTY.EXE
