@@ -1660,6 +1660,7 @@ Function Setup-KeePassPSCredential
 
 Function Get-KeePassPSCredential
 {
+    [CmdletBinding()]
     Param(
         [String] $Name
     )
@@ -1676,7 +1677,7 @@ Function Get-KeePassPSCredential
         Throw 'Could not get KeePassAccessKeySecretString and/or KeePassAccessID from ProfileData'
     }
     
-    $KeePassEntries = Get-KeePassHTTPEntry -Key $Key -ID $ID -Filter '#PowerShellCredential'
+    $KeePassEntries = Get-KeePassHTTPEntry -Key $Key -ID $ID -Filter '#PowerShellCredential' | Sort Name
     
     if ($Name)
     {
@@ -1742,8 +1743,15 @@ Function MakeSure-KeePassFileIsOpened
         $KeePassProcess = Get-Process -Name KeePass -EA SilentlyContinue
         if ($Null -eq $KeePassProcess)
         {
-            & $KeePassExeFilePath $KeePassFilePath
-            Start-Sleep -Seconds 1
+            if ($Null -ne $KeePassExeFilePath)
+            {
+                & $KeePassExeFilePath $KeePassFilePath
+                Start-Sleep -Seconds 1
+            }
+            else
+            {
+                Throw 'KeePass is not running and Generic.KeePassExeFilePath is not defined in ProfileData'
+            }
         }
     }
 }
@@ -1815,37 +1823,119 @@ Function Load-CredentialsFromProfileData
 
 Function Read-HostAsSecretStringToClipboard
 {
-    Read-Host -AsSecureString | Convert-SecureStringToPlainText | ConvertTo-SecretString | Set-Clipboard
+    [CmdletBinding(DefaultParameterSetName='EncryptWithUserKey')]
+    Param(
+        [Parameter(ParameterSetName='EncryptWithUserKey')] [ValidateSet($True)] [Switch] $EncryptWithUserKey,
+        
+        [Parameter(ParameterSetName='EncryptWithMachineKey')] [ValidateSet($True)] [Switch] $EncryptWithMachineKey,
+        
+        [Parameter(ParameterSetName='EncryptWithCertificate')] [ValidateSet($True)] [Switch] $EncryptWithCertificate,
+        [Parameter(ParameterSetName='EncryptWithCertificate', Mandatory=$True)] [String] $CertificatePath,
+        
+        [Parameter(ParameterSetName='PlainText')] [ValidateSet($True)] [Switch] $PlainText
+    )
+    
+    Read-Host -AsSecureString | Convert-SecureStringToPlainText | ConvertTo-SecretString @PSBoundParameters | Set-Clipboard
 }
 
 Function Get-CredentialForHostname
 {
     Param(
         [Parameter(Mandatory=$True)] [String] $Hostname,
-        [PSCredential] $DefaultCredential
+        [PSCredential] $SpecifiedCredential,
+        [PSCredential] $DefaultCredential,
+        [Switch] $WriteHost
     )
     
-    $Result = $DefaultCredential
-    try
+    $Credential = $SpecifiedCredential
+    $CredentialSource = $Null
+    
+    if ($Null -ne $Credential)
     {
-        $HostnameRegexes = try { $ProfileData['CredentialsByHostname'].Keys } catch {}
-        foreach ($HostnameRegex in $HostnameRegexes)
+        $CredentialSource = 'FunctionParameter'
+    }
+    else
+    {
+        try
         {
-            if ($Hostname -match "^$HostnameRegex$")
+            $HostnameRegexes = try { $ProfileData['CredentialsByHostname'].Keys } catch {}
+            foreach ($HostnameRegex in $HostnameRegexes)
             {
-                $CredentialInfo = $ProfileData['CredentialsByHostname'][$HostnameRegex]
-                $Result = & (Generate-ScriptBlockFromCredentialInfo $CredentialInfo)
-                break
+                if ($Hostname -match "^$HostnameRegex$")
+                {
+                    $CredentialInfo = $ProfileData['CredentialsByHostname'][$HostnameRegex]
+                    $Credential = & (Generate-ScriptBlockFromCredentialInfo $CredentialInfo)
+                    $Credential = [PSCredential] $Credential
+                    break
+                }
+            }
+        }
+        catch
+        {
+            Write-Host -F Magenta "Could not get credential for hostname [$Hostname] from ProfileData:`r`n$($_.Exception.Message)"
+        }
+        
+        if ($Null -ne $Credential)
+        {
+            $CredentialSource = 'ProfileDataMapping'
+        }
+        else
+        {
+            $UseKeePassCredentialMapping = try { $ProfileData['Generic']['UseKeePassCredentialMapping'] } catch {}
+            if ($Null -eq $UseKeePassCredentialMapping)
+            {
+                $UseKeePassCredentialMapping = $False
+            }
+            else
+            {
+                $UseKeePassCredentialMapping = [Bool]::Parse($UseKeePassCredentialMapping)
+            }
+            
+            if ($UseKeePassCredentialMapping)
+            {
+                $Credential = Get-KeePassPSCredential | Sort { -$_.KeePassName.Length } | ?{ $Hostname -like "$($_.KeePassName)*" } | Select -First 1
+            }
+            
+            if ($Null -ne $Credential)
+            {
+                $CredentialSource = 'KeePassMapping'
+            }
+            else
+            {
+                $Credential = $DefaultCredential
+                if ($Null -ne $Credential)
+                {
+                    $CredentialSource = 'DefaultCredential'
+                }
             }
         }
     }
-    catch
+    
+    if ($Null -ne $Credential)
     {
-        Write-Host -F Magenta "Could not get credential for hostname [$Hostname] from ProfileData:`r`n$($_.Exception.Message)"
+        if ($WriteHost)
+        {
+            Write-Host -NoN 'Using user '
+            Write-Host -NoN -F Cyan $Credential.Username
+            Write-Host -NoN ' for host '
+            Write-Host -NoN -F Cyan $Hostname
+            Write-Host -F DarkGray " (Source: $CredentialSource)"
+        }
+        $CredentialsByHostname[$HostName] = $Credential
+    }
+    else
+    {
+        if ($WriteHost)
+        {
+            Write-Host -NoN -F Magenta 'No credential'
+            Write-Host -NoN ' to use for host '
+            Write-Host -F Cyan $Hostname
+        }
     }
     
-    $Result
+    $Credential
 }
+
 #endregion
 
 #region -- Generic Functions
@@ -1894,18 +1984,15 @@ Function ssh
     $CredentialsByHostname = @{}
     foreach ($Hostname in $Hostnames)
     {
-        if (! $PSBoundParameters.ContainsKey('Credential'))
+        $CredentialForHostname = Get-CredentialForHostname -Hostname $Hostname -SpecifiedCredential $Credential -DefaultCredential $DefaultCredential -WriteHost
+        if ($Null -ne $CredentialForHostname)
         {
-            $Credential = Get-CredentialForHostname -Hostname $Hostname -DefaultCredential $DefaultCredential   # Implicit conversion to [PSCredential]
+            $CredentialsByHostname[$HostName] = $CredentialForHostname
         }
-        
-        if ($Null -eq $Credential)
+        else
         {
-            Write-Host "No credential to use for host: $Hostname"
             $CanContinue = $False
         }
-        
-        $CredentialsByHostname[$HostName] = $Credential
     }
     
     if (! $CanContinue)
@@ -1915,8 +2002,8 @@ Function ssh
     
     foreach ($Hostname in $Hostnames)
     {
-        $Credential = $CredentialsByHostname[$Hostname]
-        & $PuTTYExeFilePath "$($Credential.Username)@$Hostname" -pw $Credential.GetNetworkCredential().Password
+        $CredentialForHostname = $CredentialsByHostname[$Hostname]
+        & $PuTTYExeFilePath "$($CredentialForHostname.Username)@$Hostname" -pw $CredentialForHostname.GetNetworkCredential().Password
     }
 }
 
@@ -1929,18 +2016,10 @@ Function winrm
     
     $DefaultCredential = try { cr-default-winrm } catch {}
     
-    if (! $PSBoundParameters.ContainsKey('Credential'))
+    $CredentialForHostname = Get-CredentialForHostname -Hostname $Hostname -SpecifiedCredential $Credential -DefaultCredential $DefaultCredential -WriteHost
+    if ($Null -ne $CredentialForHostname)
     {
-        $Credential = Get-CredentialForHostname -Hostname $Hostname -DefaultCredential $DefaultCredential   # Implicit conversion to [PSCredential]
-    }
-    
-    if ($Null -eq $Credential)
-    {
-        Write-Host "No credential to use for host: $Hostname"
-    }
-    else
-    {
-        Enter-PSSession -ComputerName $Hostname -Credential $Credential
+        Enter-PSSession -ComputerName $Hostname -Credential $CredentialForHostname
     }
 }
 
@@ -1957,18 +2036,15 @@ Function rdp
     $CredentialsByHostname = @{}
     foreach ($Hostname in $Hostnames)
     {
-        if (! $PSBoundParameters.ContainsKey('Credential'))
+        $CredentialForHostname = Get-CredentialForHostname -Hostname $Hostname -SpecifiedCredential $Credential -DefaultCredential $DefaultCredential -WriteHost
+        if ($Null -ne $CredentialForHostname)
         {
-            $Credential = Get-CredentialForHostname -Hostname $Hostname -DefaultCredential $DefaultCredential   # Implicit conversion to [PSCredential]
+            $CredentialsByHostname[$HostName] = $CredentialForHostname
         }
-        
-        if ($Null -eq $Credential)
+        else
         {
-            Write-Host "No credential to use for host: $Hostname"
             $CanContinue = $False
         }
-        
-        $CredentialsByHostname[$HostName] = $Credential
     }
     
     if (! $CanContinue)
@@ -1978,8 +2054,8 @@ Function rdp
     
     foreach ($Hostname in $Hostnames)
     {
-        $Credential = $CredentialsByHostname[$Hostname]
-        Connect-Mstsc -ComputerName $Hostname -Credential $Credential -FullScreen
+        $CredentialForHostname = $CredentialsByHostname[$Hostname]
+        Connect-Mstsc -ComputerName $Hostname -Credential $CredentialForHostname -FullScreen
     }
 }
 
@@ -2008,18 +2084,15 @@ Function vsc
     $CredentialsByHostname = @{}
     foreach ($Hostname in $Hostnames)
     {
-        if (! $PSBoundParameters.ContainsKey('Credential'))
+        $CredentialForHostname = Get-CredentialForHostname -Hostname $Hostname -SpecifiedCredential $Credential -DefaultCredential $DefaultCredential -WriteHost
+        if ($Null -ne $CredentialForHostname)
         {
-            $Credential = Get-CredentialForHostname -Hostname $Hostname -DefaultCredential $DefaultCredential   # Implicit conversion to [PSCredential]
+            $CredentialsByHostname[$HostName] = $CredentialForHostname
         }
-        
-        if ($Null -eq $Credential)
+        else
         {
-            Write-Host "No credential to use for host: $Hostname"
             $CanContinue = $False
         }
-        
-        $CredentialsByHostname[$HostName] = $Credential
     }
     
     if (! $CanContinue)
@@ -2029,8 +2102,8 @@ Function vsc
     
     foreach ($Hostname in $Hostnames)
     {
-        $Credential = $CredentialsByHostname[$Hostname]
-        & $VSphereClientExeFilePath -i -s $Hostname -u $Credential.Username -p $Credential.GetNetworkCredential().Password
+        $CredentialForHostname = $CredentialsByHostname[$Hostname]
+        & $VSphereClientExeFilePath -i -s $Hostname -u $CredentialForHostname.Username -p $CredentialForHostname.GetNetworkCredential().Password
     }
 }
 

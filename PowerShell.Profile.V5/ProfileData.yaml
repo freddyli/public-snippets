@@ -1,11 +1,12 @@
 Includes: !!seq
-    # - { FilePath: $PSScriptRoot\infrastructure\powershell-profile\shared.yaml, Override: False }
+    # - { FilePath: $PSScriptRoot\infrastructure\PowerShell.Profile.V5\ProfileData-Shared-01.yaml, Override: False }
 
 Generic:
     # KeePassAccessKeySecretString: ...
     # KeePassAccessID: ...
     # KeePassFilePath: ...
     # KeePassExeFilePath: C:\Program Files (x86)\KeePass Password Safe 2\KeePass.exe
+    # UseKeePassCredentialMapping: False
 
     PuTTYExeFilePath: C:\Work\Programs\PuTTY\PUTTY.EXE
     VSphereClientExeFilePath: C:\Program Files (x86)\VMware\Infrastructure\Virtual Infrastructure Client\Launcher\VpxClient.exe
